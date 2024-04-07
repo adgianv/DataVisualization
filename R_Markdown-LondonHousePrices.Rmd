@@ -1,0 +1,687 @@
+---
+title: "Final Project Data Visualization - London House prices"
+output: html_document
+date: "2024-03-27"
+---
+
+Angelo Di Gianvito
+
+## Introduction
+
+This project aims to analyze UK house price data sourced from the Land Registry, using diverse chart types tailored to specific tasks. Visualization tools such as ggplot2, mapview for interactive maps, shiny for dashboards and other tools will be utilized. Commentary on chart observations enriches the analyses performed.
+
+
+## Setting environment
+
+Cleaning environment and setting working directory:
+```{r }
+# Clean the environment
+rm(list = ls(all.names = TRUE))
+
+# Set the working directory
+setwd("/Users/user/Desktop/BSE/COURSES/TERM 2/DATA VISUALIZATION/PART 2/FINAL PROJECT")
+```
+
+Importing libraries:
+
+```{r include=FALSE}
+# Import libraries
+library(ggplot2, quietly = TRUE)
+library(sp, quietly = TRUE)
+library(dplyr, quietly = TRUE)
+library(readr, quietly = TRUE)
+library(sf, quietly = TRUE)
+library(mapview, quietly = TRUE)
+library(stringr, quietly = TRUE)
+library(RColorBrewer, quietly = TRUE)
+library(shiny, quietly = TRUE)
+library(leaflet, quietly = TRUE)
+```
+
+
+Loading data:
+```{r }
+# Load the data
+data <- read_csv("ppdata_lite.csv") # Using the ppdata lite version of the dataset for limited computational resources
+head(data, 10)
+```
+
+Just observing the snapshot (variable town_city or county) we can see that the data is not limited to London. I will filter the data to make sure to include just the data coming from London.
+
+```{r }
+# Filter observations (county = "GREATER LONDON")
+data <- data[data$county == "GREATER LONDON", ] 
+dim(data)
+```
+
+
+## Task A
+
+### A1.
+
+```{r }
+# Checking London boroughs number unique values
+print(length(unique(data$district)))
+```
+
+```{r }
+# Create the box plot
+ggplot(data, aes(x = district, y = price)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Comparison of House Prices Across London Boroughs") +
+  theme_minimal() + 
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+I will improve the following basic chart to gain more insights from the plot.
+
+```{r }
+
+# Define the quantile range (removing outliers beyond 95th percentile)
+quantile_cutoff <- 0.95
+
+# Filter out outliers beyond the quantile range for each district
+filtered_data <- data %>%
+  group_by(district) %>%
+  filter(price < quantile(price, quantile_cutoff))
+
+# Choose the color
+chosen_color <- "darkgreen" # Changing color to steelblue
+
+# Create the box plot with filtered data
+ggplot(filtered_data, aes(x = reorder(district, price, median), y = price)) +
+  geom_boxplot(
+    fill = chosen_color,
+    color = chosen_color, # Change boxplot color
+    outlier.color = chosen_color, # Change outlier color
+    outlier.fill = chosen_color,
+    outlier.size = 1,
+    outlier.alpha = 0.1
+  ) +
+  scale_y_continuous(labels = scales::comma) +  # Adjust appearance of X labels
+  labs(title = "Comparison of House Prices Across London Boroughs") +
+  theme_minimal() + 
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_flip()
+
+
+```
+
+After removing outliers, flipping coordinates, ordering boroughs in descending order by median price, and adjusting colors, the chart is now much easier to interpret.
+
+We observe the highest median prices in Kensington and Chelsea, followed by the City of Westminster, Camden, and Hammersmith and Fulham. The City of London comes in fifth place in terms of median house prices.
+
+To provide a more comprehensive comparison of borough house prices, plotting a map of the boroughs would be a more effective approach. This way, we can consider their spatial distribution for a better understanding.
+
+```{r }
+# Loading shapefile
+boroughs <- st_read("./statistical-gis-boundaries-london/ESRI/London_Borough_Excluding_MHW.shp")
+borough_shapes <- select(boroughs, -c(GSS_CODE, HECTARES, NONLD_AREA, ONS_INNER, SUB_2009, SUB_2006))
+
+
+# Check the structure of the shapefile
+head(borough_shapes)
+```
+
+```{r }
+# Convert 'NAME' column to uppercase
+borough_shapes$NAME <- toupper(borough_shapes$NAME)
+borough_shapes$NAME <- ifelse(borough_shapes$NAME == "WESTMINSTER", "CITY OF WESTMINSTER", borough_shapes$NAME)
+
+data_by_district <- data %>%
+  group_by(district) %>%
+  summarize(mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            min_price = min(price, na.rm = TRUE),  
+            max_price = max(price, na.rm = TRUE),
+            num_of_households = n())     
+
+
+# Join the shapefile with your data by 'district' column
+joined_data <- merge(borough_shapes, data_by_district, by.x = "NAME", by.y = "district", all.x = TRUE)
+
+# Check the joined data
+head(joined_data)
+```
+
+```{r }
+# Round values in mean and median price columns
+joined_data$mean_price <- round(joined_data$mean_price, 0)
+joined_data$median_price <- round(joined_data$median_price, 0)
+
+# Create a custom tooltip label 
+custom_label <- paste(joined_data$NAME, ": ", joined_data$mean_price)
+
+# Create an interactive map with custom tooltip label
+map_median <- mapview(joined_data, zcol = "median_price",
+               layer.name = "Median House Prices",
+               col.regions = terrain.colors(10),
+               legend = TRUE, native.crs = TRUE,
+               label = custom_label)
+
+# Print the map
+map_median
+
+```
+
+Examining the median house prices depicted in the chart, it's clear that Kensington and Chelsea, the City of Westminster, and Camden stand out with the highest prices. Furthermore, the chart offers additional metadata that can be accessed by clicking on the borough of interest.
+
+
+### A2. 
+
+```{r }
+# Filter data for flats
+flats_data <- data %>% 
+  filter(property_type == "F")
+
+head(flats_data)
+```
+
+Looking at the column descriptions, the column that could be used to distinguish the floor level is SAON (Secondary Addressable Object Name. Where a property has been divided into separate units (for example, flats), the PAON (above) will identify the building and a SAON will be specified that identifies the separate unit/flat). However, we should remember that this column has a high share of missing values and can also contain other values such as flat numbers instead of floor levels.
+
+
+```{r }
+# Map the floor levels
+flats_data <- flats_data %>%
+  mutate(floor = case_when(
+    str_detect(tolower(SAON), "lower") ~ "-1",
+    str_detect(tolower(SAON), "ground") ~ "0",
+    str_detect(tolower(SAON), "first|1st") ~ "1", 
+    str_detect(tolower(SAON), "second|2nd") ~ "2",
+    str_detect(tolower(SAON), "third|3rd") ~ "3",
+    str_detect(tolower(SAON), "fourth|4th") ~ "4",
+    str_detect(tolower(SAON), "fifth|5th") ~ "5",
+    str_detect(tolower(SAON), "sixth|6th") ~ "6",
+    str_detect(tolower(SAON), "seventh|7th") ~ "7",
+    str_detect(tolower(SAON), "eighth|8th") ~ "8",
+    str_detect(tolower(SAON), "ninth|9th") ~ "9",
+    TRUE ~ NA_character_ # NAs for everything else
+  ))
+
+# Check the mapping results
+floor_counts <- flats_data %>%
+  group_by(floor) %>%
+  summarise(count = n())
+
+print(floor_counts)
+```
+
+To check the relationship between floor levels and prices, one could use either box plots or bar charts with error bars. I will implement the latter option because bar charts with error bars are particularly useful when emphasizing the average price while considering the variability and uncertainty in the data.
+
+```{r }
+# Eliminate missing values from the dataset
+flats_data <- flats_data %>%
+  filter(!is.na(floor))
+
+# Derive statistical summaries (median and standard error) for price by floor level
+summary_stats <- flats_data %>%
+  group_by(floor) %>%
+  summarize(median_price = median(price),
+            std_error = sd(price) / sqrt(n())) 
+
+# Visualize the data with bar plot and error bars
+ggplot(summary_stats, aes(x = floor, y = median_price, fill = factor(floor))) +
+  geom_bar(stat = "identity", position = "dodge", color = "black", size = 0.5) + 
+  geom_errorbar(aes(ymin = median_price - std_error, ymax = median_price + std_error), 
+                width = 0.2, position = position_dodge(width = 0.9), color = "black") +  
+  scale_fill_brewer(palette = "Set1") + 
+  scale_y_continuous(labels = scales::comma) + 
+  labs(x = "Floor Level", y = "Median Price", fill = "Floor Level",
+       title = "Median Price by Floor Level") + 
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(color = "black"),
+        legend.position = "bottom",
+        legend.title = element_text(face = "bold", size = 12,color = "black"),
+        legend.text = element_text(color = "black"),
+        plot.title = element_text(face = "bold", size = 12, color = "black"),
+        axis.title = element_text(face = "bold", size = 10, color = "black"),
+        axis.text = element_text(size = 9, color = "black"))
+```
+
+In the chart provided, floors -1 to 2 show similar median prices with low variability. However, levels 3 and 5 exhibit a significant increase in average prices, accompanied by larger standard errors. Notably, for level 5, there's a considerable standard error, highlighting the notable variability in prices within this category and suggesting diverse pricing among properties in this tier.
+
+
+## Task B
+
+### B1. 
+
+```{r }
+# Load file with postcodes and latitude/longitude
+ukpostcodes <- read.csv("ukpostcodes.csv", header = TRUE, sep = ',')
+
+ukpostcodes <- ukpostcodes %>%
+  filter(latitude > 50)
+head(ukpostcodes)
+```
+
+
+```{r }
+# Extracting year from date_of_transfer column and assigning it to a new column 'year'
+filtered_data$year <- as.character(substr(filtered_data$date_of_transfer, 1, 4))
+
+
+# Utilizing filtered data to avoid outliers affecting the color scheme
+
+# Calculating statistics for each year and postcode
+data_by_year_postcode <- filtered_data %>%
+  group_by(year, postcode) %>%
+  summarize(mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            min_price = min(price, na.rm = TRUE),  
+            max_price = max(price, na.rm = TRUE),
+            .groups = 'drop')
+
+# Calculating statistics for all years combined and by postcode
+data_all_years_postcode <- filtered_data %>%
+  group_by(postcode) %>%
+  summarize(mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            min_price = min(price, na.rm = TRUE),  
+            max_price = max(price, na.rm = TRUE),
+            num_of_households = n(),
+            year = "All")
+
+# Combining the results
+data_by_postcode <- bind_rows(data_by_year_postcode, data_all_years_postcode)
+
+# Rounding values in mean and median price columns
+data_by_postcode$mean_price <- round(data_by_postcode$mean_price, 0)
+data_by_postcode$median_price <- round(data_by_postcode$median_price, 0)
+
+# Checking for missing values in data_by_postcode
+missing_values <- colSums(is.na(data_by_postcode))
+print(missing_values)
+```
+
+
+```{r }
+# Eliminating observations with missing postcodes
+data_by_postcode <- data_by_postcode %>%
+  filter(!is.na(postcode))
+
+# Merging datasets
+joined_data_postcode <- merge(data_by_postcode, ukpostcodes, by = "postcode", all.x = TRUE)
+
+# Checking for missing values in the merged dataset
+missing_values <- colSums(is.na(joined_data_postcode))
+print(missing_values)
+```
+
+```{r }
+# Eliminating observations with missing latitude and longitude
+joined_data_postcode <- joined_data_postcode %>%
+  filter(!is.na(longitude) & !is.na(latitude))
+
+# Converting to sf object
+joined_data_postcode_sf <- st_as_sf(joined_data_postcode, coords = c("longitude", "latitude"), crs = 4326)
+
+# Writing spatial data to a GeoJSON file
+st_write(joined_data_postcode_sf, "price_postcode.geojson", driver = "GeoJSON") 
+```
+
+
+### B2. 
+
+```{r }
+# Loading geojson file
+postcode_data <- st_read("price_postcode.geojson")
+#postcode_data <- joined_data_postcode_sf
+head(postcode_data)
+```
+
+
+```{r }
+# Generate summarized data for borough prices in the Shiny dashboard
+
+# Employ filtered data sans outliers to ensure chart consistency
+# Compute statistics for each year and district
+summary_by_year_district <- filtered_data %>%
+  group_by(year, district) %>%
+  summarize(mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            min_price = min(price, na.rm = TRUE),  
+            max_price = max(price, na.rm = TRUE),
+            num_of_households = n(),
+            .groups = 'drop')
+
+# Compute statistics for all years combined and by district
+summary_all_years_district <- filtered_data %>%
+  group_by(district) %>%
+  summarize(mean_price = mean(price, na.rm = TRUE),
+            median_price = median(price, na.rm = TRUE),
+            min_price = min(price, na.rm = TRUE),  
+            max_price = max(price, na.rm = TRUE),
+            num_of_households = n(),
+            year = "All")
+
+# Merge the results
+summary_combined <- bind_rows(summary_by_year_district, summary_all_years_district)
+head(summary_combined)
+```
+
+Below I added a Shiny app that showcases the London house prices, represented by markers on the map corresponding to postcodes. To offer spatial context, borough borders are displayed on the map.
+
+Furthermore, users can access a summary table categorized by boroughs, enhancing comprehension of the data. By utilizing selectors on the left panel, users can choose various metrics and specific years, which will dynamically update both charts for comparative analysis.
+
+```{r }
+# Define UI
+ui <- fluidPage(
+  titlePanel("House Prices - London"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      radioButtons("colors",
+                   "Color by:",
+                   choices = c("Median Price", "Mean Price", "Max Price", "Min Price"),
+                   selected = "Median Price"),
+      radioButtons("years",
+                   "Select Year:",
+                   choices = c("All", sort(setdiff(unique(postcode_data$year), "All"), decreasing = TRUE)),
+                   selected = "All"),
+
+    ),
+    
+    mainPanel(
+      h3(paste("Price Distribution Postcodes")),
+      uiOutput("map_subtitle"),
+      plotOutput("mapPlot", height = "750px", width = "100%"),
+    )
+  )
+)
+
+# Server logic
+server <- function(input, output) {
+  
+  output$mapPlot <- renderPlot({
+    # Filter the chart by selected year
+    filtered_map_final <- postcode_data %>% 
+      filter(year %in% input$years)
+
+    # Determine which variable to use for coloring
+    selected_color <- switch(input$colors,
+                        "Mean Price" = "mean_price",
+                        "Max Price" = "max_price",
+                        "Min Price" = "min_price",
+                        "Median Price" = "median_price")
+    
+   # Plot markers on the map and color by the selected metric
+ggplot(filtered_map_final) +
+  geom_sf(aes(color = !!sym(selected_color)), size=1, alpha=0.9) +
+  geom_sf(data = borough_shapes, color = "black", fill = NA, size = 2) +  # Add black borders for boroughs
+  scale_color_gradient(name = input$colors, 
+                       low = "#3288bd",  # Dark blue
+                       high = "#d53e4f", # Dark red
+                       labels = scales::comma) +
+  theme_minimal() +
+  labs(fill = input$colors)
+  })
+  
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+```
+
+
+### B3. Instead of using median price, you could have been asked to colour-code the mean house price. Would that have given a better view of the house prices across the UK? Please justify your answer.
+
+
+In map visualizations for understanding house prices across the UK, going with the median house price as the basis for color-coding will give a clearer picture. 
+
+This choice will improve the analysis of typical prices of the areas thanke to the median's robustness to outliers. By showing the middle value of the price distribution, the median becomes a more reliable benchmark, as it will reflect the pric that most buyers are willing to pay in a given area and making the map easier to understand.
+
+On the other hand, using the mean house price for color-coding could increase the skewness of typical prices, especially in areas where a few high-value properties have a big impact on the average. Mean price calculations are more likely to be biased by outliers and extreme values, which means they might not accurately represent what price most properties are going for in a given area. 
+
+Therefore, while mean prices can give some insights, they're not as good as median values for showing typical prices in different places on a map.
+
+
+## Task C
+
+### C1. 
+
+```{r }
+# Retrieving year from date_of_transfer column
+data$year <- as.integer(substr(data$date_of_transfer, 1, 4))
+head(data)
+```
+
+To examine how house prices change over time, I will create a line plot showing the median price (grouped by year).
+
+```{r }
+# Compute median prices
+median_prices <- data %>%
+  group_by(year) %>%
+  summarize(median_price = median(price))
+
+# Choose color
+chosen_color = "darkgreen"
+
+# Develop a plot
+ggplot(median_prices, aes(x = year, y = median_price, group = 1)) +
+  geom_line(color = chosen_color) +
+  geom_point(color = chosen_color) + 
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Median House Price Over Time (1995-2016)") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+The plot shows that the median price has increased in the years, also due to a progrssively higher inflation. 
+
+In the following section, I compare prices between 2009 and 2015 as they show a very high change in the median price of the houses. 
+
+```{r }
+# Filter the dataset
+filtered_data <- data %>%
+  filter(year %in% c(2009, 2015)) # Changing the years to 2009 and 2015
+
+# Compute price difference by borough
+price_diff <- filtered_data %>%
+  group_by(district) %>%
+  summarize(price_difference = median(price[year == 2015]) - median(price[year == 2009]))
+
+# Visualize the price difference by borough with a continuous color scale
+ggplot(price_diff, aes(x = reorder(district, price_difference), y = price_difference, fill = price_difference)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Price Difference") + # Changing to a continuous color scale and modifying legend title
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Price Difference by Area: 2009 vs 2015") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_flip()
+```
+
+The plot shows that Kensington and Chelse, City of London and Westminster were the areas that showed a higher increase in the prices between 2009 and 2015. 
+
+```{r}
+# Filter the dataset
+filtered_data <- data %>%
+  filter(year %in% c(2007, 2009)) # Changing the years to 2009 and 2015
+
+# Compute price difference by borough
+price_diff <- filtered_data %>%
+  group_by(district) %>%
+  summarize(price_difference = median(price[year == 2009]) - median(price[year == 2007]))
+
+# Visualize the price difference by borough with a continuous color scale
+ggplot(price_diff, aes(x = reorder(district, price_difference), y = price_difference, fill = price_difference)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Price Difference") + # Changing to a continuous color scale and modifying legend title
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Price Difference by Area: 2007 vs 2009") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_flip()
+```
+
+It is interesting to see how the data is capturing the effect of the financial crisis of 2008. The plot shows that between 2007 and 2009 for most of the neighborhoods the house prices decreased rather than increased as the common trend was showing. It is also interesting to see that the most popular and expensive boroughs that highlighted a high increase in the price between 2009 and 2015, were not affected by the financial crisis as much as most of the other areas. Kensington and chelsea still had a great increase in the prices even durin the financial crisis period.
+
+### C2. 
+
+```{r }
+# Retrieving month from date_of_transfer column
+data$month <- as.integer(substr(data$date_of_transfer, 6, 7))
+```
+
+
+```{r }
+# Derive median price for each month
+median_prices <- data %>%
+  group_by(month) %>%
+  summarize(median_price = median(price))
+
+# Visualize using a bar chart with an attractive color style
+ggplot(median_prices, aes(x = factor(month), y = median_price)) +
+  geom_bar(stat = "identity", fill = "#FFA500") +
+  labs(title = "Price by Month") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+The plot might suggest that at the start of spring and at the start of winter, house prices tend to be lower.
+
+I will test this hypothesis in the following code chunk.
+
+```{r }
+# Defining function to retrieve seasons (this is approximate as they don't correspond exactly to the seasons)
+get_season <- function(month) {
+  if (month %in% c(3, 4, 5)) {
+    return("spring")
+  } else if (month %in% c(6, 7, 8)) {
+    return("summer")
+  } else if (month %in% c(9, 10, 11)) {
+    return("autumn")
+  } else {
+    return("winter")
+  }
+}
+
+# Apply function to create 'season' col
+data$season <- sapply(data$month, get_season)
+```
+
+
+```{r }
+# Compute median prices aggregated by season
+seasonal_median_prices <- data %>%
+  group_by(season) %>%
+  summarise(median_price = median(price))
+
+# Transform "season" into a factor with custom order
+seasonal_median_prices$season_factor <- factor(seasonal_median_prices$season, levels = c("winter", "spring", "summer", "autumn"))
+
+# Create the plot
+ggplot(seasonal_median_prices, aes(x = season_factor, y = median_price, fill = season_factor)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d() +
+  labs(title = "Median Property Price by Season",
+       fill = "Season") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+```
+
+The plot indicates that in line with the hypothesis the prices are slightly lower in winter and spring compared to summer and autumn. 
+
+I will further analysis this claim using regression.
+
+```{r }
+# Fitting linear regression model
+model <- lm(price ~ season, data = data)
+
+# Check the summary
+summary(model)
+```
+
+As a premise, this is a very simplified model which is not accounting for the necessary factors to explain all the variability in the house prices, but could give some interesting feedback. 
+
+The values of the coefficients are using autumn as the baseline for the model, so the coefficients indicate the discrepancy with autumn prices.
+
+The results indicate that there is a significant price difference in prices between spring and autumn seasons as the coefficient is strongly negative and the p-value is significantly low (less than 1%). This provides some evidence of the fact that properties in spring tend to have lower prices compared to the autumn season as the plot was highlighting.
+No evidence is found that prices are lower in winter compared to autumn as I hypothesized before. 
+
+In the nexte section I will analyze differences in property types:
+
+```{r }
+# Aggregate data by season and property type, and compute median prices
+seasonal_median_prices_properties <- data %>%
+  group_by(season, property_type) %>%
+  summarise(median_price = median(price)) %>%
+  mutate(season_factor = factor(season, levels = c("winter", "spring", "summer", "autumn")))
+
+# Create a bar chart faceted by property type
+ggplot(seasonal_median_prices_properties, aes(x = season_factor, y = median_price, fill = season_factor)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +  # Adjust bar width and add black outline
+  scale_fill_viridis_d() + 
+  labs(title = "Price by Season", fill = NULL) +
+  facet_wrap(~ property_type, ncol = 3, scales = "free_y") +  # Adjust facet panel layout and allow free y-axis scaling
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        panel.spacing = unit(1.5, "lines"))
+```
+
+It is clear from the plot that for every property type the prices in the spring season are lower as we demosntrated before. There is clearly a trend showing that prices tend to be very high in winter for every type of property and lower in spring to then recover in the summer.
+
+Looking at the different property types we can see that most of them have consistency in the price during the year as the variability is pretty low. On the contrary for the class 'other' there are large differences in median prices during the year.
+
+```{r }
+# Get unique values of property_type
+property_types <- unique(data$property_type)
+
+# Initialize a list to store model summaries
+model_summaries <- list()
+
+# Loop through each property type
+for (property_type in property_types) {
+  # Subset the data for the current property type
+  subset_data <- data[data$property_type == property_type, ]
+  
+  # Fit a linear regression model
+  model <- lm(price ~ season, data = subset_data)
+  
+  # Store the summary of the model
+  model_summary <- summary(model)
+  
+  # Store the model summary in the list
+  model_summaries[[property_type]] <- model_summary
+}
+
+# View the summaries for each property type
+model_summaries
+```
+
+Looking at the linear model results above, prices during Spring tend to be lower compared to Autumn for property types such as Semi-Detached, Detached, Flats/Maisonettes, and Terraced houses, with significance levels at 5% or lower. this makes our previous results robust for any property type. 
+
+Interestingly, the coefficients for summer prices compared to autumn for the Terraced houses is positive and significant to the 10 % significant level, which makes total sense due to the possibility to make use of the terrace availability of the house, more in the summer compared to autumn making it more attractive in that season.
+
+However, while there's a clear price difference across seasons in the chart for the 'Others' category, it lacks any statistical significance as p-values are always higher than 10%.
+
+
+## Conclusions
+
+In this project, I delved into London's house price data, obtained from the Land Registry. Using diverse visualization tools like ggplot2 for charts, mapview for interactive maps, and shiny for dynamic dashboards, I examined different facets of the dataset, unveiling valuable insights.
+
+My analysis indicates that certain boroughs, notably Kensington and Chelsea, the City of Westminster and City of London have notably high median prices. Interestingly, properties on floors 3 and 4 tend to command higher median prices compared to the others. Furthermore, mean prices displayed skewness due to prominent outliers.
+
+To offer a thorough understanding, I created a shiny dashboard. This dashboard enables users to explore prices at the postcode level and presents summary statistics for boroughs across various metrics such as mean price, median price, minimum price, and maximum price.
+
+Moreover, my examination showed an upward trajectory in median prices over time, except for the period of the financial crisis. Additionally, concerning seasonality, I uncovered evidence suggesting that prices are generally lower during spring compared to autumn and higher in summer for terraced houses.
+
+In essence, this project not only gives insights on the geographical distribution of house prices in London but also provides valuable insights into temporal trends and seasonal fluctuations, enriching our comprehension of the housing market dynamics.
+
